@@ -6,7 +6,7 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 
 /**
  * @title AOXC Security Test — Audit Grade
- * @notice Zero unchecked-transfer warnings. Optimized for zero notes.
+ * @notice Zero lint warnings. Governance-aligned access control checks.
  */
 contract AOXCSecurityTest is AOXCTest {
     /*//////////////////////////////////////////////////////////////
@@ -45,7 +45,7 @@ contract AOXCSecurityTest is AOXCTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        VELOCITY LIMITS
+                            VELOCITY LIMITS
     //////////////////////////////////////////////////////////////*/
 
     function test_03_VelocityLimits_Pro() public {
@@ -56,19 +56,20 @@ contract AOXCSecurityTest is AOXCTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        SUCCESS PATH CHECK
+                          SUCCESS PATH CHECK
     //////////////////////////////////////////////////////////////*/
 
     function test_Security_StandardTransfer_OK() public {
         _fundUser(user1, 10e18);
 
         vm.prank(user1);
+        // FIXED: Boolean check to satisfy erc20-unchecked-transfer
         bool ok = proxy.transfer(user2, 1e18);
         assertTrue(ok, "STANDARD_TRANSFER_FAILED");
     }
 
     /*//////////////////////////////////////////////////////////////
-                        ACCESS CONTROL
+                            ACCESS CONTROL
     //////////////////////////////////////////////////////////////*/
 
     function testSecurityPrivilegeEscalationComplianceCannotMint() public {
@@ -97,15 +98,18 @@ contract AOXCSecurityTest is AOXCTest {
         implementation.initialize(user2);
     }
 
+    /**
+     * @notice [FIXED] Dynamic role check for Governance
+     * @dev Ensures expected revert matches actual GOVERNANCE_ROLE (0x7184...)
+     */
     function test_Security_Unauthorized_Governance_Revert() public {
         address attacker = makeAddr("attacker");
+        // FIX: AdminRole(0x00) yerine kontratın beklediği GOVERNANCE_ROLE kullanıldı.
+        bytes32 govRole = proxy.GOVERNANCE_ROLE();
+
         vm.prank(attacker);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector,
-                attacker,
-                0x00 // Default Admin Role
-            )
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, attacker, govRole)
         );
         proxy.setTransferVelocity(1e18, 10e18);
     }

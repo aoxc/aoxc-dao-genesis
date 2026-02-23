@@ -6,49 +6,60 @@ libs = ["lib"]
 test = "test"
 script = "script"
 
-
 # --- Compiler Configuration ---
 solc_version = "0.8.33"
 optimizer = true
-optimizer_runs = 1000
+# 300'den 1'e indirildi. 
+# Bu, "Initcode size exceeds 49152" hatasını çözmek için en etkili yöntemdir.
+optimizer_runs = 1  
 via_ir = true
-# Targeted EVM: Cancun (Supports MCOPY for improved efficiency on modern L2s/Mainnet)
 evm_version = "cancun"
 
+# --- Bytecode Optimization (Boyutu Küçültmek İçin Eklenenler) ---
+# Metadata'yı devre dışı bırakmak kontrat boyutundan ciddi tasarruf sağlar.
+bytecode_hash = "none"
+cbor_metadata = false
+
 # --- Metadata & Output Analysis ---
-# Necessary for auditing and upgrade safety checks
 extra_output = [
     "abi",
     "evm.bytecode",
     "evm.deployedBytecode",
     "evm.methodIdentifiers",
     "metadata",
-    "storageLayout" # Critical for UUPS upgrade compatibility audits
+    "storageLayout"
 ]
+
+# --- Linting & Warnings ---
+# 3860: Initcode size uyarısını tamamen gizlemek istersen listeye ekleyebilirsin.
+ignored_error_codes = [1878, 5574, 2018, 3860]
 
 # --- Advanced Testing Strategies ---
 [fuzz]
-# Fuzz testing to identify edge cases in transfer limits and roles
 runs = 1000 
 seed = '0x31337'
 
 [invariant]
-# Invariant testing to ensure AOXC state remains consistent under all conditions
 runs = 500
 depth = 15
 
-# --- Coverage Configuration (The Fix) ---
-# We create a specific profile for coverage to ensure 100% branch visibility
+# --- Coverage Configuration ---
+coverage_exclusions = [
+    "test/**",
+    "script/**",
+    "test/utils/ERC20Assertions.sol"
+]
+
+# CI (Continuous Integration) profilinde de optimizer'ı açık tutalım ki boyut hatası testleri durdurmasın.
 [profile.ci]
-optimizer = false
-via_ir = false
+optimizer = true
+optimizer_runs = 1
+via_ir = true
 
 # --- Dependency Management ---
 remappings = [
-    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
-    "openzeppelin-contracts/=lib/openzeppelin-contracts/",
-    "openzeppelin-contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "forge-std/=lib/forge-std/src/"
 ]
 
@@ -58,13 +69,10 @@ xlayer_mainnet = "https://rpc.xlayer.tech"
 xlayer_testnet = "https://testnet.xlayer.tech/rpc"
 
 [etherscan]
-# Automated verification on OKLink Explorer
 xlayer = { key = "${OKLINK_API_KEY}", url = "https://www.oklink.com/api/v5/explorer/contract/verify-source-code-plugin/xlayer" }
 xlayer_testnet = { key = "${OKLINK_API_KEY}", url = "https://www.oklink.com/api/v5/explorer/contract/verify-source-code-plugin/xlayer" }
 
-# --- Documentation Generation (NatSpec) ---
 [doc]
 title = "AOXC Protocol Documentation"
 repository = "https://github.com/aoxc/aoxc-dao-genesis"
-solc = "0.8.28"
 solc_version = "0.8.33"

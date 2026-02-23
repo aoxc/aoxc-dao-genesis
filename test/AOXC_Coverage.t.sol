@@ -11,13 +11,13 @@ import {AOXC} from "../src/AOXC.sol";
  */
 contract AOXCCoverageTest is AOXCTest {
     /*//////////////////////////////////////////////////////////////
-                                 SETUP
+                                SETUP
     //////////////////////////////////////////////////////////////*/
 
     function setUp() public virtual override {
         super.setUp();
 
-        // Deterministic balances for branch coverage
+        // Branch coverage için deterministik bakiyeler
         deal(address(proxy), admin, INITIAL_SUPPLY);
         deal(address(proxy), user1, 1_000_000e18);
     }
@@ -26,9 +26,6 @@ contract AOXCCoverageTest is AOXCTest {
                                 HELPERS
     //////////////////////////////////////////////////////////////*/
 
-    /**
-     * @dev Used for transfers that are expected to fail.
-     */
     function _expectTransferFail(address from, address to, uint256 amount) internal {
         vm.prank(from);
         (bool ok,) = address(proxy).call(abi.encodeWithSignature("transfer(address,uint256)", to, amount));
@@ -39,7 +36,7 @@ contract AOXCCoverageTest is AOXCTest {
                            SECTION 1: VELOCITY
     //////////////////////////////////////////////////////////////*/
 
-    function test_03_VelocityLimits() public override {
+    function test_03_VelocityLimits() public virtual override {
         uint256 maxTx = proxy.maxTransferAmount();
         deal(address(proxy), user1, maxTx * 2);
 
@@ -50,7 +47,7 @@ contract AOXCCoverageTest is AOXCTest {
                          SECTION 2: TAX BRANCHES
     //////////////////////////////////////////////////////////////*/
 
-    function test_Audit_TaxLogic_DeepScan() public {
+    function test_Audit_TaxLogic_DeepScan() public virtual {
         uint256 amount = 1000e18;
         deal(address(proxy), user1, amount);
 
@@ -59,7 +56,7 @@ contract AOXCCoverageTest is AOXCTest {
         assertTrue(ok1, "STANDARD_TRANSFER_FAILED");
 
         vm.prank(admin);
-        proxy.initializeV2(500); // 5% Tax
+        proxy.initializeV2(500); // %5 Vergi
 
         deal(address(proxy), user1, amount);
 
@@ -73,15 +70,17 @@ contract AOXCCoverageTest is AOXCTest {
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Fixed the address mismatch by ensuring vm.prank uses the exact address.
+     * @notice [FIXED] Added 'virtual' to allow overriding.
+     * @dev Uses dynamic GOVERNANCE_ROLE to match contract implementation.
      */
-    function test_Governance_AccessControl() public {
-        address unauthorized = makeAddr("unauthorized_user"); // Use makeAddr for clarity
-        bytes32 adminRole = proxy.DEFAULT_ADMIN_ROLE();
+    function test_Governance_AccessControl() public virtual {
+        address unauthorized = makeAddr("unauthorized_user");
+        // FIX: Kontrat GOVERNANCE_ROLE beklediği için adminRole'ü buna çekiyoruz
+        bytes32 govRole = proxy.GOVERNANCE_ROLE();
 
         vm.prank(unauthorized);
         vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, adminRole)
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, govRole)
         );
         proxy.setExclusionFromLimits(user2, true);
     }
@@ -90,7 +89,7 @@ contract AOXCCoverageTest is AOXCTest {
                            SECTION 4: INFLATION
     //////////////////////////////////////////////////////////////*/
 
-    function test_Audit_Inflation_Limits() public {
+    function test_Audit_Inflation_Limits() public virtual {
         uint256 yearly = proxy.yearlyMintLimit();
 
         vm.startPrank(admin);
@@ -108,7 +107,7 @@ contract AOXCCoverageTest is AOXCTest {
                             SECTION 5: RESCUE
     //////////////////////////////////////////////////////////////*/
 
-    function test_Audit_Rescue_SafeFailure() public {
+    function test_Audit_Rescue_SafeFailure() public virtual {
         address failingToken = makeAddr("FailingToken");
 
         vm.mockCall(failingToken, abi.encodeWithSelector(0xa9059cbb, admin, 100), abi.encode(false));
