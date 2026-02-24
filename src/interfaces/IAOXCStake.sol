@@ -1,13 +1,29 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.33;
 
+/*//////////////////////////////////////////////////////////////
+    ___   ____ _  ________   ______ ____  ____  ______
+   /   | / __ \ |/ / ____/  / ____// __ \/ __ \/ ____/
+  / /| |/ / / /   / /      / /    / / / / /_/ / __/
+ / ___ / /_/ /   / /___   / /___ / /_/ / _, _/ /___
+/_/  |_\____/_/|_\____/   \____/ \____/_/ |_/_____/
+
+    Sovereign Protocol Infrastructure | Storage Schema
+//////////////////////////////////////////////////////////////*/
+
 /**
- * @title IAOXCStake
- * @author AOXC Protocol
- * @notice Interface for the tiered, deflationary staking system.
- * @dev Defines the interaction logic for users, governors, and external integrators.
- * @custom:repository https://github.com/aoxc/AOXC-Core
+ * @title AOXC Sovereign Storage Schema
+ * @author AOXCAN AI & Orcun
+ * @custom:contact      aoxcdao@gmail.com
+ * @custom:website      https://aoxc.github.io/
+ * @custom:repository   https://github.com/aoxc/AOXC-Core
+ * @custom:social       https://x.com/AOXCDAO
+ * @notice Centralized storage layout using ERC-7201 Namespaced Storage.
+ * @dev High-fidelity storage pointers for gas efficiency and upgrade safety.
+ * This pattern prevents storage collisions during complex proxy upgrades.
  */
+//////////////////////////////////////////////////////////////*/
+
 interface IAOXCStake {
     /**
      * @dev Structure representing a user's unique staking position.

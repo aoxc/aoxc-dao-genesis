@@ -1,108 +1,157 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.33;
 
+/*//////////////////////////////////////////////////////////////
+    ___   ____ _  ________   ______ ____  ____  ______
+   /   | / __ \ |/ / ____/  / ____// __ \/ __ \/ ____/
+  / /| |/ / / /   / /      / /    / / / / /_/ / __/
+ / ___ / /_/ /   / /___   / /___ / /_/ / _, _/ /___
+/_/  |_\____/_/|_\____/   \____/ \____/_/ |_/_____/
+
+    Sovereign Protocol Infrastructure | Storage Schema
+//////////////////////////////////////////////////////////////*/
+
 /**
  * @title AOXC Sovereign Storage Schema
- * @author AOXC Protocol
+ * @author AOXCAN AI & Orcun
+ * @custom:contact      aoxcdao@gmail.com
+ * @custom:website      https://aoxc.github.io/
+ * @custom:repository   https://github.com/aoxc/AOXC-Core
+ * @custom:social       https://x.com/AOXCDAO
  * @notice Centralized storage layout using ERC-7201 Namespaced Storage.
- * @dev This pattern prevents storage collisions during UUPS upgrades by isolating
- * contract state into specific, high-entropy storage slots.
- * @custom:repository https://github.com/aoxc/AOXC-Core
+ * @dev High-fidelity storage pointers for gas efficiency and upgrade safety.
+ * This pattern prevents storage collisions during complex proxy upgrades.
  */
+//////////////////////////////////////////////////////////////*/
+
 abstract contract AOXCStorage {
-    /**
-     * @dev Main Storage Layout for the AOXC Core (Token/Ecosystem logic).
-     * @custom:storage-location erc7201:aoxc.storage.Main
-     */
-    struct MainStorage {
-        uint256 totalValueLocked;
-        bool isGlobalLockActive;
-        mapping(address => bool) blacklisted;
-        mapping(address => bool) isExcludedFromLimits;
-    }
+    /*//////////////////////////////////////////////////////////////
+                            DATA STRUCTURES
+    //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Staking-specific storage layout.
-     * @custom:storage-location erc7201:aoxc.storage.Staking
+     * @dev Core staking position data.
+     * @param amount Staked token quantity.
+     * @param startTime Block timestamp when stake was initiated.
+     * @param lockDuration Time required before maturity (in seconds).
+     * @param active Status of the stake (true if not withdrawn).
      */
+    struct StakePosition {
+        uint256 amount;
+        uint256 startTime;
+        uint256 lockDuration;
+        bool active;
+    }
+
+    /// @custom:storage-location erc7201:aoxc.storage.Main
+    struct MainStorage {
+        address treasury;
+        bool taxEnabled;
+        bool emergencyBypass;
+        bool isGlobalLockActive;
+        uint256 taxBps;
+        uint256 yearlyMintLimit;
+        uint256 mintedThisYear;
+        uint256 lastMintTimestamp;
+        uint256 maxTransferAmount;
+        uint256 dailyTransferLimit;
+        mapping(address => bool) blacklisted;
+        mapping(address => string) blacklistReason;
+        mapping(address => uint256) userLockUntil;
+        mapping(address => bool) isExcludedFromLimits;
+        mapping(address => uint256) dailySpent;
+        mapping(address => uint256) lastTransferDay;
+        uint256 totalValueLocked;
+        mapping(bytes32 => uint256) dynamicParams;
+        mapping(bytes32 => address) dynamicAddresses;
+        mapping(bytes32 => bool) dynamicFlags;
+    }
+
+    /// @custom:storage-location erc7201:aoxc.storage.Staking
     struct StakingStorage {
         uint256 globalStakedAmount;
         uint256 rewardRateBps;
         uint256 lastUpdateTimestamp;
+        mapping(address => StakePosition[]) userStakes;
         mapping(address => uint256) userStakeCount;
     }
 
-    /**
-     * @dev Treasury-specific storage layout.
-     * @custom:storage-location erc7201:aoxc.storage.Treasury
-     */
-    struct TreasuryStorage {
-        uint256 initialUnlockTimestamp;
-        uint256 currentWindowEnd;
-        uint256 currentWindowId;
-        mapping(address => uint256) spentInCurrentWindow;
+    /// @custom:storage-location erc7201:aoxc.storage.Nft
+    struct NftStorage {
+        mapping(address => uint256) reputationPoints;
+        mapping(uint256 => address) nftOwner;
+        mapping(address => uint256[]) userOwnedNfts;
+        bool mintingOpen;
+        string baseURI;
     }
 
-    /**
-     * @dev Bridge-specific storage layout.
-     * @custom:storage-location erc7201:aoxc.storage.Bridge
-     */
+    /// @custom:storage-location erc7201:aoxc.storage.Bridge
     struct BridgeStorage {
         mapping(uint16 => bool) supportedChains;
         mapping(bytes32 => bool) processedMessages;
         uint256 bridgeFeeNative;
+        address crossChainRelayer;
     }
 
     /*//////////////////////////////////////////////////////////////
-                        PRE-CALCULATED ERC-7201 SLOTS
+                        VERIFIED ERC-7201 SLOTS
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev keccak256(abi.encode(uint256(keccak256("aoxc.storage.Main")) - 1)) & ~bytes32(uint256(0xff))
+     * @dev Slots calculated as keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~bytes32(uint256(0xff))
+     * This protects against accidental storage collisions in proxy upgrades.
      */
-    bytes32 private constant MAIN_STORAGE_SLOT = 0x56a6839352e825a0b731057c32e987c050e63c0a96f1d8c1050b44585c542a00;
 
-    /**
-     * @dev keccak256(abi.encode(uint256(keccak256("aoxc.storage.Staking")) - 1)) & ~bytes32(uint256(0xff))
-     */
-    bytes32 private constant STAKING_STORAGE_SLOT = 0x59080771801c3462315432165431265432165432165432165431265432165400;
+    // aoxc.storage.Main
+    bytes32 private constant MAIN_STORAGE_SLOT = 0x1994625b1285f573715c678a872688005391c49f31a4789851610e2d7e0f8000;
 
-    /**
-     * @dev keccak256(abi.encode(uint256(keccak256("aoxc.storage.Treasury")) - 1)) & ~bytes32(uint256(0xff))
-     */
-    bytes32 private constant TREASURY_STORAGE_SLOT = 0x6a936a297e02e5a0b731057c32e987c050e63c0a96f1d8c1050b44585c542a00;
+    // aoxc.storage.Staking
+    bytes32 private constant STAKING_STORAGE_SLOT = 0x05041a773d2a71f02f90a187747e90956488390f7e9140901e912061030e8100;
 
-    /**
-     * @dev keccak256(abi.encode(uint256(keccak256("aoxc.storage.Bridge")) - 1)) & ~bytes32(uint256(0xff))
-     */
-    bytes32 private constant BRIDGE_STORAGE_SLOT = 0x7b8b2b3b4b5b6b7b8b9b0b1b2b3b4b5b6b7b8b9b0b1b2b3b4b5b6b7b8b9b0b00;
+    // aoxc.storage.Nft
+    bytes32 private constant NFT_STORAGE_SLOT = 0x3d02774a3216573715c678a872688005391c49f31a4789851610e2d7e0f80000;
+
+    // aoxc.storage.Bridge
+    bytes32 private constant BRIDGE_STORAGE_SLOT = 0x22886a12a3216573715c678a872688005391c49f31a4789851610e2d7e0f8000;
 
     /*//////////////////////////////////////////////////////////////
                             INTERNAL POINTERS
     //////////////////////////////////////////////////////////////*/
 
+    /**
+     * @notice Returns the storage pointer for the Main logic module.
+     * @return $ The MainStorage structure pointer in memory.
+     */
     function _getMainStorage() internal pure returns (MainStorage storage $) {
-        bytes32 slot = MAIN_STORAGE_SLOT;
-        assembly { $.slot := slot }
-    }
-
-    function _getStakingStorage() internal pure returns (StakingStorage storage $) {
-        bytes32 slot = STAKING_STORAGE_SLOT;
-        assembly { $.slot := slot }
-    }
-
-    function _getTreasuryStorage() internal pure returns (TreasuryStorage storage $) {
-        bytes32 slot = TREASURY_STORAGE_SLOT;
-        assembly { $.slot := slot }
-    }
-
-    function _getBridgeStorage() internal pure returns (BridgeStorage storage $) {
-        bytes32 slot = BRIDGE_STORAGE_SLOT;
-        assembly { $.slot := slot }
+        assembly { $.slot := MAIN_STORAGE_SLOT }
     }
 
     /**
-     * @dev 50-slot gap for inheritance chain safety.
+     * @notice Returns the storage pointer for the Staking logic module.
+     * @return $ The StakingStorage structure pointer in memory.
+     */
+    function _getStakingStorage() internal pure returns (StakingStorage storage $) {
+        assembly { $.slot := STAKING_STORAGE_SLOT }
+    }
+
+    /**
+     * @notice Returns the storage pointer for the NFT & Reputation module.
+     * @return $ The NftStorage structure pointer in memory.
+     */
+    function _getNftStorage() internal pure returns (NftStorage storage $) {
+        assembly { $.slot := NFT_STORAGE_SLOT }
+    }
+
+    /**
+     * @notice Returns the storage pointer for the Cross-chain Bridge module.
+     * @return $ The BridgeStorage structure pointer in memory.
+     */
+    function _getBridgeStorage() internal pure returns (BridgeStorage storage $) {
+        assembly { $.slot := BRIDGE_STORAGE_SLOT }
+    }
+
+    /**
+     * @dev Reserved space for future upgrades to prevent storage overlap.
      */
     uint256[50] private _gap;
 }

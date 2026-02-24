@@ -1,145 +1,195 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.33;
 
+/*//////////////////////////////////////////////////////////////
+    ___   ____ _  ________   ______ ____  ____  ______
+   /   | / __ \ |/ / ____/  / ____// __ \/ __ \/ ____/
+  / /| |/ / / /   / /      / /    / / / / /_/ / __/
+ / ___ / /_/ /   / /___   / /___ / /_/ / _, _/ /___
+/_/  |_\____/_/|_\____/   \____/ \____/_/ |_/_____/
+
+    Sovereign Protocol Infrastructure | Storage Schema
+//////////////////////////////////////////////////////////////*/
+
 /**
- * @title AOXC Sovereign Staking V2
- * @author AOXC Core Team
- * @notice Deflationary staking with tiered locks and high-fidelity reward logic.
- * @custom:repository https://github.com/aoxc/AOXC-Core
+ * @title AOXC Sovereign Storage Schema
+ * @author AOXCAN AI & Orcun
+ * @custom:contact      aoxcdao@gmail.com
+ * @custom:website      https://aoxc.github.io/
+ * @custom:repository   https://github.com/aoxc/AOXC-Core
+ * @custom:social       https://x.com/AOXCDAO
+ * @notice Centralized storage layout using ERC-7201 Namespaced Storage.
+ * @dev High-fidelity storage pointers for gas efficiency and upgrade safety.
+ * This pattern prevents storage collisions during complex proxy upgrades.
  */
+//////////////////////////////////////////////////////////////*/
 
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import { ReentrancyGuardUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
-interface IAOXC is IERC20 {
-    function burn(uint256 amount) external;
-}
+import { AOXCStorage } from "./abstract/AOXCStorage.sol";
+import { AOXCConstants } from "./libraries/AOXCConstants.sol";
+import { AOXCErrors } from "./libraries/AOXCErrors.sol";
 
-contract AOXCStaking is Initializable, AccessControlUpgradeable, ReentrancyGuardUpgradeable, UUPSUpgradeable {
+/**
+ * @title AOXC Staking (Core V2.6)
+ * @author AOXC Protocol Team
+ * @notice Reputation-based staking mechanism with lock durations.
+ * @dev Optimized for Sovereign V3 Storage Schema and Zero Linter Warnings.
+ */
+contract AOXCStaking is Initializable, AccessControlUpgradeable, UUPSUpgradeable, AOXCStorage {
     using SafeERC20 for IERC20;
-    using SafeCast for uint256;
 
-    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
+    /*//////////////////////////////////////////////////////////////
+                        REENTRANCY GUARD STORAGE
+    //////////////////////////////////////////////////////////////*/
 
-    struct Stake {
-        uint128 amount;
-        uint128 startTime;
-        uint128 lockDuration;
-        bool active;
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _status;
+
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
     }
 
-    IAOXC public stakingToken;
-    uint256 public constant ANNUAL_REWARD_BPS = 600; // 6%
-    uint256 private constant BPS_DENOMINATOR = 10_000;
-    uint256 private constant SECONDS_IN_YEAR = 365 days;
+    function _nonReentrantBefore() internal virtual {
+        if (_status == _ENTERED) revert AOXCErrors.AOXC_CustomRevert("ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+    }
 
-    mapping(address => Stake[]) public userStakes;
-    uint256 public totalValueLocked;
+    function _nonReentrantAfter() internal virtual {
+        _status = _NOT_ENTERED;
+    }
 
-    error AOXC_Stake_InvalidDuration();
-    error AOXC_Stake_NotFound();
-    error AOXC_Stake_Inactive();
-    error AOXC_Stake_InsufficientContractFunds();
+    /*//////////////////////////////////////////////////////////////
+                            STATE VARIABLES
+    //////////////////////////////////////////////////////////////*/
 
-    event Staked(address indexed user, uint256 amount, uint256 duration);
-    event Withdrawn(address indexed user, uint256 returned, uint256 burned, bool early);
+    IERC20 private _stakingToken;
+    address public rewardStrategy;
+
+    /*//////////////////////////////////////////////////////////////
+                                EVENTS
+    //////////////////////////////////////////////////////////////*/
+
+    event Staked(address indexed user, uint256 amount, uint256 lockDuration);
+    event Unstaked(address indexed user, uint256 amount, bool early);
+    event StrategyUpdated(address indexed newStrategy);
+
+    /*//////////////////////////////////////////////////////////////
+                            INITIALIZATION
+    //////////////////////////////////////////////////////////////*/
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    function initialize(address _token, address _governor) public initializer {
-        if (_token == address(0) || _governor == address(0)) revert AOXC_Stake_InvalidDuration();
+    /**
+     * @notice Initializes the staking engine.
+     * @param governor The address of the DAO governor.
+     * @param token The ERC20 token to be staked.
+     */
+    function initialize(address governor, address token) external initializer {
+        if (governor == address(0) || token == address(0)) revert AOXCErrors.AOXC_InvalidAddress();
 
         __AccessControl_init();
-        __ReentrancyGuard_init();
 
-        // UUPSUpgradeable v5+ does not require a __init call.
-        // __UUPSUpgradeable_init(); -> Removed to fix Error (7576)
+        _status = _NOT_ENTERED;
+        _stakingToken = IERC20(token);
 
-        stakingToken = IAOXC(_token);
-        _grantRole(DEFAULT_ADMIN_ROLE, _governor);
-        _grantRole(GOVERNANCE_ROLE, _governor);
-        _grantRole(UPGRADER_ROLE, _governor);
+        _grantRole(DEFAULT_ADMIN_ROLE, governor);
+        _grantRole(AOXCConstants.GOVERNANCE_ROLE, governor);
+        _grantRole(AOXCConstants.UPGRADER_ROLE, governor);
     }
 
     /*//////////////////////////////////////////////////////////////
-                            STAKING LOGIC
+                            BRIDGE OPERATIONS
     //////////////////////////////////////////////////////////////*/
 
-    function stake(uint256 _amount, uint256 _months) external nonReentrant {
-        uint256 duration;
-        if (_months == 3) duration = 90 days;
-        else if (_months == 6) duration = 180 days;
-        else if (_months == 9) duration = 270 days;
-        else if (_months == 12) duration = 360 days;
-        else revert AOXC_Stake_InvalidDuration();
+    /**
+     * @notice Stakes tokens to gain reputation points.
+     * @param amount Token amount.
+     * @param duration Lock duration in seconds.
+     */
+    function stake(uint256 amount, uint256 duration) external nonReentrant {
+        if (amount == 0) revert AOXCErrors.AOXC_ZeroAmount();
+        if (duration < AOXCConstants.MIN_STAKE_DURATION) revert AOXCErrors.AOXC_InvalidLockTier(duration);
 
-        IERC20(address(stakingToken)).safeTransferFrom(msg.sender, address(this), _amount);
-        totalValueLocked += _amount;
+        StakingStorage storage $ = _getStakingStorage();
+        NftStorage storage nft = _getNftStorage();
 
-        userStakes[msg.sender].push(
-            Stake({
-                amount: _amount.toUint128(),
-                startTime: block.timestamp.toUint128(),
-                lockDuration: duration.toUint128(),
-                active: true
+        _stakingToken.safeTransferFrom(msg.sender, address(this), amount);
+
+        $.userStakes[msg.sender].push(
+            AOXCStorage.StakePosition({
+                amount: amount, startTime: block.timestamp, lockDuration: duration, active: true
             })
         );
 
-        emit Staked(msg.sender, _amount, duration);
+        // Reputation calculation: (amount * duration) / year
+        uint256 repGained = (amount * duration) / AOXCConstants.ONE_YEAR;
+        nft.reputationPoints[msg.sender] += repGained;
+
+        emit Staked(msg.sender, amount, duration);
     }
 
-    function withdraw(uint256 _index) external nonReentrant {
-        if (_index >= userStakes[msg.sender].length) revert AOXC_Stake_NotFound();
+    /**
+     * @notice Withdraws staked tokens and reduces reputation.
+     * @param index The index of the stake position in userStakes mapping.
+     */
+    function withdraw(uint256 index) external nonReentrant {
+        StakingStorage storage $ = _getStakingStorage();
+        NftStorage storage nft = _getNftStorage();
 
-        Stake storage s = userStakes[msg.sender][_index];
-        if (!s.active) revert AOXC_Stake_Inactive();
+        if (index >= $.userStakes[msg.sender].length) revert AOXCErrors.AOXC_InvalidStakeIndex(index);
 
-        uint256 elapsedTime = block.timestamp - s.startTime;
-        bool isEarly = elapsedTime < s.lockDuration;
+        AOXCStorage.StakePosition storage s = $.userStakes[msg.sender][index];
+        if (!s.active) revert AOXCErrors.AOXC_StakeNotActive();
 
-        uint256 reward = (uint256(s.amount) * ANNUAL_REWARD_BPS * elapsedTime) / (BPS_DENOMINATOR * SECONDS_IN_YEAR);
+        bool isEarly = block.timestamp < (s.startTime + s.lockDuration);
+        uint256 repLost = (s.amount * s.lockDuration) / AOXCConstants.ONE_YEAR;
 
-        uint256 amountToReturn;
-        uint256 amountToBurn;
+        // Reputation Burn Logic
+        if (nft.reputationPoints[msg.sender] > repLost) {
+            nft.reputationPoints[msg.sender] -= repLost;
+        } else {
+            nft.reputationPoints[msg.sender] = 0;
+        }
 
         s.active = false;
-        totalValueLocked -= s.amount;
+        uint256 amountToReturn = s.amount;
 
-        if (isEarly) {
-            amountToReturn = reward;
-            amountToBurn = s.amount;
-        } else {
-            amountToReturn = uint256(s.amount) + reward;
-        }
-
-        if (amountToBurn > 0) {
-            stakingToken.burn(amountToBurn);
-        }
-
-        if (amountToReturn > 0) {
-            if (stakingToken.balanceOf(address(this)) < amountToReturn) {
-                revert AOXC_Stake_InsufficientContractFunds();
-            }
-            IERC20(address(stakingToken)).safeTransfer(msg.sender, amountToReturn);
-        }
-
-        emit Withdrawn(msg.sender, amountToReturn, amountToBurn, isEarly);
+        _stakingToken.safeTransfer(msg.sender, amountToReturn);
+        emit Unstaked(msg.sender, amountToReturn, isEarly);
     }
 
     /*//////////////////////////////////////////////////////////////
-                            UPGRADEABILITY
+                            ADMIN FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function _authorizeUpgrade(address) internal override onlyRole(UPGRADER_ROLE) { }
+    /**
+     * @notice Updates the strategy for staking rewards.
+     */
+    function setRewardStrategy(address _strategy) external onlyRole(AOXCConstants.GOVERNANCE_ROLE) {
+        if (_strategy == address(0)) revert AOXCErrors.AOXC_InvalidAddress();
+        rewardStrategy = _strategy;
+        emit StrategyUpdated(_strategy);
+    }
 
-    uint256[49] private _gap;
+    /*//////////////////////////////////////////////////////////////
+                            UPGRADE LOGIC
+    //////////////////////////////////////////////////////////////*/
+
+    function _authorizeUpgrade(address) internal override onlyRole(AOXCConstants.UPGRADER_ROLE) { }
+
+    /**
+     * @dev Gap size 47 accounts for _status slot usage.
+     */
+    uint256[47] private _gap;
 }

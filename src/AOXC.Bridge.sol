@@ -1,164 +1,198 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.33;
 
+/*//////////////////////////////////////////////////////////////
+    ___   ____ _  ________   ______ ____  ____  ______
+   /   | / __ \ |/ / ____/  / ____// __ \/ __ \/ ____/
+  / /| |/ / / /   / /      / /    / / / / /_/ / __/
+ / ___ / /_/ /   / /___   / /___ / /_/ / _, _/ /___
+/_/  |_\____/_/|_\____/   \____/ \____/_/ |_/_____/
+
+    Sovereign Protocol Infrastructure | Storage Schema
+//////////////////////////////////////////////////////////////*/
+
 /**
- * @title AOXC Fortress Bridge V2
- * @author AOXC Core Team
- * @notice High-performance omnichain bridge manager with rate-limiting.
- * @custom:repository https://github.com/aoxc/AOXC-Core
+ * @title AOXC Sovereign Storage Schema
+ * @author AOXCAN AI & Orcun
+ * @custom:contact      aoxcdao@gmail.com
+ * @custom:website      https://aoxc.github.io/
+ * @custom:repository   https://github.com/aoxc/AOXC-Core
+ * @custom:social       https://x.com/AOXCDAO
+ * @notice Centralized storage layout using ERC-7201 Namespaced Storage.
+ * @dev High-fidelity storage pointers for gas efficiency and upgrade safety.
+ * This pattern prevents storage collisions during complex proxy upgrades.
  */
+//////////////////////////////////////////////////////////////*/
 
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import { ReentrancyGuardUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
-contract AOXCBridge is
-    Initializable,
-    AccessControlUpgradeable,
-    ReentrancyGuardUpgradeable,
-    PausableUpgradeable,
-    UUPSUpgradeable
-{
+import { AOXCStorage } from "./abstract/AOXCStorage.sol";
+import { AOXCConstants } from "./libraries/AOXCConstants.sol";
+import { AOXCErrors } from "./libraries/AOXCErrors.sol";
+
+/**
+ * @title AOXCBridge
+ * @author AOXCAN AI & Orcun
+ * @notice High-performance cross-chain gateway for AOXC with Sub-DAO rate limiting.
+ * @dev ReentrancyGuard is baked-in to avoid dependency issues with OZ V5.
+ */
+contract AOXCBridge is Initializable, AccessControlUpgradeable, PausableUpgradeable, UUPSUpgradeable, AOXCStorage {
     using SafeERC20 for IERC20;
-    using SafeCast for uint256;
 
-    // --- ROLES ---
-    bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
-    bytes32 public constant BRIDGE_OPERATOR_ROLE = keccak256("BRIDGE_OPERATOR_ROLE");
-    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
+    /*//////////////////////////////////////////////////////////////
+                        REENTRANCY GUARD STORAGE
+    //////////////////////////////////////////////////////////////*/
 
-    // --- STATE ---
-    IERC20 public aoxcToken;
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _status;
 
-    struct ChainConfig {
-        uint128 dailyLimitOut;
-        uint128 dailyLimitIn;
-        uint128 currentSpentOut;
-        uint128 currentSpentIn;
-        uint64 lastResetTimestamp;
-        bool isSupported;
+    /**
+     * @dev LINT FIX: Logic wrapped in internal functions to reduce contract size.
+     */
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
     }
 
-    mapping(uint16 => ChainConfig) public chainConfigs;
-    mapping(bytes32 => bool) public processedMessages;
+    function _nonReentrantBefore() internal virtual {
+        if (_status == _ENTERED) revert AOXCErrors.AOXC_CustomRevert("ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+    }
 
-    // --- ERRORS ---
-    error AOXC_Bridge_Forbidden();
-    error AOXC_Bridge_ChainNotSupported();
-    error AOXC_Bridge_LimitExceeded();
-    error AOXC_Bridge_AlreadyProcessed();
-    error AOXC_Bridge_InvalidAddress();
+    function _nonReentrantAfter() internal virtual {
+        _status = _NOT_ENTERED;
+    }
 
-    // --- EVENTS ---
-    event SentToChain(uint16 indexed dstChainId, address indexed from, address indexed to, uint256 amount);
-    event ReceivedFromChain(uint16 indexed srcChainId, address indexed to, uint256 amount, bytes32 messageId);
+    /*//////////////////////////////////////////////////////////////
+                            STATE VARIABLES
+    //////////////////////////////////////////////////////////////*/
+
+    IERC20 private _aoxcToken;
+
+    struct SubDaoPass {
+        bool hasPriority;
+        uint256 dailyLimit;
+        uint256 currentVolume;
+        uint256 lastUpdate;
+    }
+
+    mapping(address => SubDaoPass) public subDaoPasses;
+
+    /*//////////////////////////////////////////////////////////////
+                                EVENTS
+    //////////////////////////////////////////////////////////////*/
+
+    event SentToChain(
+        uint16 indexed dstChainId, address indexed from, address indexed to, uint256 amount, bool prioritized
+    );
+    event ReceivedFromChain(uint16 indexed srcChainId, address indexed to, uint256 amount, bytes32 indexed messageId);
+    event SubDaoPassUpdated(address indexed subDao, bool priority, uint256 dailyLimit);
+
+    /*//////////////////////////////////////////////////////////////
+                            INITIALIZATION
+    //////////////////////////////////////////////////////////////*/
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    function initialize(address _governor, address _guardian, address _aoxcToken) public initializer {
-        if (_governor == address(0) || _guardian == address(0) || _aoxcToken == address(0)) {
-            revert AOXC_Bridge_InvalidAddress();
-        }
+    function initialize(address governor, address guardian, address token) external initializer {
+        if (governor == address(0) || token == address(0)) revert AOXCErrors.AOXC_InvalidAddress();
 
         __AccessControl_init();
-        __ReentrancyGuard_init();
         __Pausable_init();
-        // UUPSUpgradeable does not have an internal __init function. Removed to fix Error 7576.
 
-        aoxcToken = IERC20(_aoxcToken);
+        _status = _NOT_ENTERED;
+        _aoxcToken = IERC20(token);
 
-        _grantRole(DEFAULT_ADMIN_ROLE, _governor);
-        _grantRole(GOVERNANCE_ROLE, _governor);
-        _grantRole(UPGRADER_ROLE, _governor);
-        _grantRole(GUARDIAN_ROLE, _guardian);
+        _grantRole(DEFAULT_ADMIN_ROLE, governor);
+        _grantRole(AOXCConstants.GOVERNANCE_ROLE, governor);
+        _grantRole(AOXCConstants.GUARDIAN_ROLE, guardian);
+        _grantRole(AOXCConstants.UPGRADER_ROLE, governor);
     }
 
     /*//////////////////////////////////////////////////////////////
-                            BRIDGE LOGIC
+                            BRIDGE OPERATIONS
     //////////////////////////////////////////////////////////////*/
 
-    function bridgeOut(uint16 _dstChainId, address _to, uint256 _amount) external whenNotPaused nonReentrant {
-        ChainConfig storage config = chainConfigs[_dstChainId];
-        if (!config.isSupported) revert AOXC_Bridge_ChainNotSupported();
-        if (_to == address(0)) revert AOXC_Bridge_InvalidAddress();
+    function bridgeOut(uint16 dstChainId, address to, uint256 amount) external whenNotPaused nonReentrant {
+        if (amount == 0) revert AOXCErrors.AOXC_ZeroAmount();
 
-        _updateLimit(_dstChainId, _amount, true);
+        BridgeStorage storage $ = _getBridgeStorage();
+        if (!$.supportedChains[dstChainId]) revert AOXCErrors.AOXC_ChainNotSupported(uint256(dstChainId));
 
-        aoxcToken.safeTransferFrom(msg.sender, address(this), _amount);
-        emit SentToChain(_dstChainId, msg.sender, _to, _amount);
+        SubDaoPass storage pass = subDaoPasses[msg.sender];
+        bool isPrioritized = false;
+
+        if (pass.dailyLimit > 0) {
+            if (block.timestamp > pass.lastUpdate + AOXCConstants.ONE_DAY) {
+                pass.currentVolume = 0;
+                pass.lastUpdate = block.timestamp;
+            }
+            if (pass.currentVolume + amount > pass.dailyLimit) {
+                revert AOXCErrors.AOXC_ThresholdNotMet(pass.currentVolume + amount, pass.dailyLimit);
+            }
+            pass.currentVolume += amount;
+            isPrioritized = pass.hasPriority;
+        }
+
+        _aoxcToken.safeTransferFrom(msg.sender, address(this), amount);
+        emit SentToChain(dstChainId, msg.sender, to, amount, isPrioritized);
     }
 
-    function bridgeIn(uint16 _srcChainId, address _to, uint256 _amount, bytes32 _messageId)
+    function bridgeIn(uint16 srcChainId, address to, uint256 amount, bytes32 messageId)
         external
-        onlyRole(BRIDGE_OPERATOR_ROLE)
+        onlyRole(AOXCConstants.BRIDGE_ROLE)
         whenNotPaused
         nonReentrant
     {
-        if (!chainConfigs[_srcChainId].isSupported) revert AOXC_Bridge_ChainNotSupported();
-        if (processedMessages[_messageId]) revert AOXC_Bridge_AlreadyProcessed();
+        BridgeStorage storage $ = _getBridgeStorage();
+        if ($.processedMessages[messageId]) revert AOXCErrors.AOXC_BridgeTxAlreadyProcessed(messageId);
 
-        _updateLimit(_srcChainId, _amount, false);
-
-        processedMessages[_messageId] = true;
-        aoxcToken.safeTransfer(_to, _amount);
-
-        emit ReceivedFromChain(_srcChainId, _to, _amount, _messageId);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                            INTERNAL SECURITY
-    //////////////////////////////////////////////////////////////*/
-
-    function _updateLimit(uint16 _chainId, uint256 _amount, bool isOut) internal {
-        ChainConfig storage config = chainConfigs[_chainId];
-
-        if (block.timestamp >= uint256(config.lastResetTimestamp) + 1 days) {
-            config.lastResetTimestamp = uint64(block.timestamp);
-            config.currentSpentOut = 0;
-            config.currentSpentIn = 0;
-        }
-
-        if (isOut) {
-            if (uint256(config.currentSpentOut) + _amount > config.dailyLimitOut) revert AOXC_Bridge_LimitExceeded();
-            config.currentSpentOut += _amount.toUint128();
-        } else {
-            if (uint256(config.currentSpentIn) + _amount > config.dailyLimitIn) revert AOXC_Bridge_LimitExceeded();
-            config.currentSpentIn += _amount.toUint128();
-        }
+        $.processedMessages[messageId] = true;
+        _aoxcToken.safeTransfer(to, amount);
+        emit ReceivedFromChain(srcChainId, to, amount, messageId);
     }
 
     /*//////////////////////////////////////////////////////////////
                             ADMIN FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function configureChain(uint16 _chainId, bool _status, uint128 _limitIn, uint128 _limitOut)
+    function setSubDaoPass(address subDao, bool priority, uint256 limit)
         external
-        onlyRole(GOVERNANCE_ROLE)
+        onlyRole(AOXCConstants.GOVERNANCE_ROLE)
     {
-        chainConfigs[_chainId].isSupported = _status;
-        chainConfigs[_chainId].dailyLimitIn = _limitIn;
-        chainConfigs[_chainId].dailyLimitOut = _limitOut;
-        chainConfigs[_chainId].lastResetTimestamp = uint64(block.timestamp);
+        if (subDao == address(0)) revert AOXCErrors.AOXC_InvalidAddress();
+        subDaoPasses[subDao] =
+            SubDaoPass({ hasPriority: priority, dailyLimit: limit, currentVolume: 0, lastUpdate: block.timestamp });
+        emit SubDaoPassUpdated(subDao, priority, limit);
     }
 
-    function emergencyPause() external onlyRole(GUARDIAN_ROLE) {
+    function pause() external onlyRole(AOXCConstants.GUARDIAN_ROLE) {
         _pause();
     }
 
-    function unpause() external onlyRole(GOVERNANCE_ROLE) {
+    function unpause() external onlyRole(AOXCConstants.GOVERNANCE_ROLE) {
         _unpause();
     }
 
-    function _authorizeUpgrade(address) internal override onlyRole(UPGRADER_ROLE) { }
+    /*//////////////////////////////////////////////////////////////
+                            UPGRADE LOGIC
+    //////////////////////////////////////////////////////////////*/
 
-    uint256[43] private _gap;
+    function _authorizeUpgrade(address) internal override onlyRole(AOXCConstants.UPGRADER_ROLE) { }
+
+    /**
+     * @dev LINT FIX: Renamed to mixedCase _gap.
+     * Gap size 47 accounts for _status slot.
+     */
+    uint256[47] private _gap;
 }

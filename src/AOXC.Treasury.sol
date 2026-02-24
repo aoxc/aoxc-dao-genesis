@@ -1,64 +1,62 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.33;
 
+/*//////////////////////////////////////////////////////////////
+    ___   ____ _  ________   ______ ____  ____  ______
+   /   | / __ \ |/ / ____/  / ____// __ \/ __ \/ ____/
+  / /| |/ / / /   / /      / /    / / / / /_/ / __/
+ / ___ / /_/ /   / /___   / /___ / /_/ / _, _/ /___
+/_/  |_\____/_/|_\____/   \____/ \____/_/ |_/_____/
+
+    Sovereign Protocol Infrastructure | Storage Schema
+//////////////////////////////////////////////////////////////*/
+
 /**
- * @title AOXC Sovereign Treasury V2
- * @author AOXC Core Team
- * @notice Advanced vault with 6-year cliff and 6% annual rolling limits.
- * @custom:repository https://github.com/aoxc/AOXC-Core
+ * @title AOXC Sovereign Storage Schema
+ * @author AOXCAN AI & Orcun
+ * @custom:contact      aoxcdao@gmail.com
+ * @custom:website      https://aoxc.github.io/
+ * @custom:repository   https://github.com/aoxc/AOXC-Core
+ * @custom:social       https://x.com/AOXCDAO
+ * @notice Centralized storage layout using ERC-7201 Namespaced Storage.
+ * @dev High-fidelity storage pointers for gas efficiency and upgrade safety.
+ * This pattern prevents storage collisions during complex proxy upgrades.
  */
+//////////////////////////////////////////////////////////////*/
 
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import { ReentrancyGuardUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
-contract AOXCTreasury is
-    Initializable,
-    AccessControlUpgradeable,
-    PausableUpgradeable,
-    ReentrancyGuardUpgradeable,
-    UUPSUpgradeable
-{
+import { AOXCConstants } from "./libraries/AOXCConstants.sol";
+import { AOXCErrors } from "./libraries/AOXCErrors.sol";
+
+interface IAOXCGuard {
+    function validate(uint256 cellId, address token, uint256 amount) external view returns (bool);
+}
+
+contract AOXCSovereignFortress is Initializable, AccessControlUpgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    // --- ROLES ---
-    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
-    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-
-    // --- CONSTANTS ---
-    uint256 public constant INITIAL_LOCK_DURATION = 2190 days; // 6 Years
-    uint256 public constant SPENDING_WINDOW = 365 days;
-    uint256 public constant MAX_WITHDRAWAL_BPS = 600; // 6%
-    uint256 private constant BPS_DENOMINATOR = 10_000;
-
-    // --- STATE ---
-    uint256 public initialUnlockTimestamp;
-    uint256 public currentWindowId;
-    uint256 public currentWindowEnd;
-    bool public emergencyMode;
-
-    struct WindowAccounting {
-        uint256 startBalance;
-        uint256 withdrawn;
+    struct TreasuryCell {
+        uint256 dailyLimit;
+        uint256 currentVolume;
+        uint256 lastReset;
+        bool isAmputated;
+        address manager;
     }
 
-    // Token => WindowId => Accounting
-    mapping(address => mapping(uint256 => WindowAccounting)) public windowStates;
+    mapping(uint256 => TreasuryCell) public cells;
+    uint256 public cellCount;
+    bool public globalNeuralLock;
+    address[] public defenseWalls;
 
-    // --- ERRORS ---
-    error AOXC_Vault_Locked(uint256 current, uint256 unlockAt);
-    error AOXC_Vault_WindowClosed();
-    error AOXC_Vault_LimitExceeded();
-    error AOXC_Vault_TransferFailed();
-    error AOXC_Vault_ZeroAddress();
-
-    event WindowOpened(uint256 indexed windowId, uint256 windowEnd);
-    event FundsWithdrawn(address indexed token, address indexed to, uint256 amount);
+    event WallAdded(address indexed wall);
+    event NeuralLockActivated(string reason);
+    event CellAmputated(uint256 indexed cellId, string reason);
+    event FundsReleased(uint256 indexed cellId, address to, uint256 amount);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -66,106 +64,100 @@ contract AOXCTreasury is
     }
 
     function initialize(address governor) external initializer {
-        if (governor == address(0)) revert AOXC_Vault_ZeroAddress();
+        if (governor == address(0)) revert AOXCErrors.AOXC_InvalidAddress();
 
         __AccessControl_init();
-        __Pausable_init();
-        __ReentrancyGuard_init();
-
-        // UUPSUpgradeable v5+ does not require a __init call.
-        // __UUPSUpgradeable_init(); satırı kaldırıldı.
 
         _grantRole(DEFAULT_ADMIN_ROLE, governor);
-        _grantRole(GOVERNANCE_ROLE, governor);
-        _grantRole(EMERGENCY_ROLE, governor);
-        _grantRole(UPGRADER_ROLE, governor);
-
-        initialUnlockTimestamp = block.timestamp + INITIAL_LOCK_DURATION;
+        _grantRole(AOXCConstants.GOVERNANCE_ROLE, governor);
+        _grantRole(AOXCConstants.GUARDIAN_ROLE, governor);
     }
 
     /*//////////////////////////////////////////////////////////////
-                            WINDOW MANAGEMENT
+                        MODULAR DEFENSE LOGIC
     //////////////////////////////////////////////////////////////*/
 
-    function openNextWindow() external onlyRole(GOVERNANCE_ROLE) {
-        if (block.timestamp < initialUnlockTimestamp) {
-            revert AOXC_Vault_Locked(block.timestamp, initialUnlockTimestamp);
+    function addDefenseWall(address wall) external onlyRole(AOXCConstants.GOVERNANCE_ROLE) {
+        if (wall == address(0)) revert AOXCErrors.AOXC_InvalidAddress();
+        defenseWalls.push(wall);
+        emit WallAdded(wall);
+    }
+
+    /**
+     * @dev Internal validation logic for security walls.
+     */
+    function _checkAllWalls(uint256 cellId, address token, uint256 amount) internal view {
+        uint256 len = defenseWalls.length;
+        for (uint256 i = 0; i < len;) {
+            if (!IAOXCGuard(defenseWalls[i]).validate(cellId, token, amount)) {
+                revert AOXCErrors.AOXC_CustomRevert("WALL_BLOCK: REJECTED");
+            }
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            CELL OPERATIONS
+    //////////////////////////////////////////////////////////////*/
+
+    function createCell(uint256 limit, address manager) external onlyRole(AOXCConstants.GOVERNANCE_ROLE) {
+        if (manager == address(0)) revert AOXCErrors.AOXC_InvalidAddress();
+
+        cellCount++;
+        cells[cellCount] = TreasuryCell({
+            dailyLimit: limit, currentVolume: 0, lastReset: block.timestamp, isAmputated: false, manager: manager
+        });
+    }
+
+    function withdraw(uint256 cellId, address token, uint256 amount, address to) external nonReentrant {
+        if (globalNeuralLock) revert AOXCErrors.AOXC_CustomRevert("SYSTEM_SEALED");
+
+        TreasuryCell storage cell = cells[cellId];
+
+        if (cell.isAmputated) revert AOXCErrors.AOXC_CustomRevert("CELL_AMPUTATED");
+
+        // V6.1 FIX: Using the correct argument order for your library
+        if (msg.sender != cell.manager) {
+            revert AOXCErrors.AOXC_Unauthorized(AOXCConstants.GOVERNANCE_ROLE, msg.sender);
         }
 
-        if (block.timestamp <= currentWindowEnd) revert AOXC_Vault_WindowClosed();
+        if (block.timestamp > cell.lastReset + 1 days) {
+            cell.currentVolume = 0;
+            cell.lastReset = block.timestamp;
+        }
 
-        currentWindowId++;
-        currentWindowEnd = block.timestamp + SPENDING_WINDOW;
+        if (cell.currentVolume + amount > cell.dailyLimit) {
+            cell.isAmputated = true;
+            globalNeuralLock = true;
+            emit NeuralLockActivated("CELL_LIMIT_BREACH");
+            revert AOXCErrors.AOXC_CustomRevert("DEFENSE_TRIGGERED: LOCKDOWN");
+        }
 
-        emit WindowOpened(currentWindowId, currentWindowEnd);
-    }
+        _checkAllWalls(cellId, token, amount);
 
-    /*//////////////////////////////////////////////////////////////
-                            WITHDRAWAL ENGINE
-    //////////////////////////////////////////////////////////////*/
-
-    function withdrawERC20(address token, address to, uint256 amount)
-        external
-        nonReentrant
-        onlyRole(GOVERNANCE_ROLE)
-        whenNotPaused
-    {
-        _processWithdrawal(token, to, amount);
+        cell.currentVolume += amount;
         IERC20(token).safeTransfer(to, amount);
-    }
 
-    function withdrawEth(address payable to, uint256 amount)
-        external
-        nonReentrant
-        onlyRole(GOVERNANCE_ROLE)
-        whenNotPaused
-    {
-        _processWithdrawal(address(0), to, amount);
-        (bool success,) = to.call{ value: amount }("");
-        if (!success) revert AOXC_Vault_TransferFailed();
-    }
-
-    function _processWithdrawal(address token, address to, uint256 amount) internal {
-        if (to == address(0)) revert AOXC_Vault_ZeroAddress();
-        if (emergencyMode) {
-            emit FundsWithdrawn(token, to, amount);
-            return;
-        }
-
-        if (block.timestamp > currentWindowEnd) revert AOXC_Vault_WindowClosed();
-
-        WindowAccounting storage acc = windowStates[token][currentWindowId];
-
-        if (acc.startBalance == 0) {
-            acc.startBalance = (token == address(0)) ? address(this).balance : IERC20(token).balanceOf(address(this));
-        }
-
-        uint256 maxAllowed = (acc.startBalance * MAX_WITHDRAWAL_BPS) / BPS_DENOMINATOR;
-        if (acc.withdrawn + amount > maxAllowed) revert AOXC_Vault_LimitExceeded();
-
-        acc.withdrawn += amount;
-        emit FundsWithdrawn(token, to, amount);
+        emit FundsReleased(cellId, to, amount);
     }
 
     /*//////////////////////////////////////////////////////////////
-                            ADMIN & SAFETY
+                        EMERGENCY & ADMIN
     //////////////////////////////////////////////////////////////*/
 
-    function toggleEmergencyMode(bool status) external onlyRole(EMERGENCY_ROLE) {
-        emergencyMode = status;
+    function emergencyEvacuate(address token, address safetyVault) external onlyRole(AOXCConstants.GUARDIAN_ROLE) {
+        globalNeuralLock = true;
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        if (balance > 0) {
+            IERC20(token).safeTransfer(safetyVault, balance);
+        }
     }
 
-    function pause() external onlyRole(EMERGENCY_ROLE) {
-        _pause();
+    function resetSystem() external onlyRole(AOXCConstants.GOVERNANCE_ROLE) {
+        globalNeuralLock = false;
     }
 
-    function unpause() external onlyRole(GOVERNANCE_ROLE) {
-        _unpause();
-    }
-
-    function _authorizeUpgrade(address) internal override onlyRole(UPGRADER_ROLE) { }
-
-    receive() external payable { }
-
-    uint256[48] private _gap;
+    uint256[47] private _gap;
 }

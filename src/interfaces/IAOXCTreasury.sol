@@ -1,13 +1,29 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.33;
 
+/*//////////////////////////////////////////////////////////////
+    ___   ____ _  ________   ______ ____  ____  ______
+   /   | / __ \ |/ / ____/  / ____// __ \/ __ \/ ____/
+  / /| |/ / / /   / /      / /    / / / / /_/ / __/
+ / ___ / /_/ /   / /___   / /___ / /_/ / _, _/ /___
+/_/  |_\____/_/|_\____/   \____/ \____/_/ |_/_____/
+
+    Sovereign Protocol Infrastructure | Storage Schema
+//////////////////////////////////////////////////////////////*/
+
 /**
- * @title IAOXCTreasury (Sovereign Finance Standard)
- * @author AOXC Protocol
- * @notice Interface for the AOXC DAO Treasury with 6-year cliff and 6% annual caps.
- * @dev Standardized for interaction with Governor and Security Registry.
- * @custom:repository https://github.com/aoxc/AOXC-Core
+ * @title AOXC Sovereign Storage Schema
+ * @author AOXCAN AI & Orcun
+ * @custom:contact      aoxcdao@gmail.com
+ * @custom:website      https://aoxc.github.io/
+ * @custom:repository   https://github.com/aoxc/AOXC-Core
+ * @custom:social       https://x.com/AOXCDAO
+ * @notice Centralized storage layout using ERC-7201 Namespaced Storage.
+ * @dev High-fidelity storage pointers for gas efficiency and upgrade safety.
+ * This pattern prevents storage collisions during complex proxy upgrades.
  */
+//////////////////////////////////////////////////////////////*/
+
 interface IAOXCTreasury {
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
